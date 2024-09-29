@@ -1,5 +1,5 @@
 '''
-    Token Counter v0.1
+    Token Counter v0.2
     Copyright (C) 2024  NickNau
     
     https://github.com/tropptr-torrptrop/token-counter
