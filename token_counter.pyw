@@ -26,13 +26,11 @@ import sys
 import json
 from pathlib import Path
 import tiktoken
-from transformers import AutoTokenizer
-from transformers import LlamaTokenizerFast
-from transformers import GemmaTokenizerFast
-from transformers import Qwen2TokenizerFast
 import anthropic
+from transformers import AutoTokenizer, LlamaTokenizerFast, GemmaTokenizerFast, Qwen2TokenizerFast
 
-CONFIG_FILE = 'tokenizer_config.json'
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(SCRIPT_DIR, 'tokenizer_config.json')
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -47,6 +45,7 @@ def save_config(config):
     with open(CONFIG_FILE, 'w') as f:
         json.dump(config, f)
 
+
 def get_tokenizer(name):
     if name.startswith('gpt'):
         return tiktoken.encoding_for_model(name)
@@ -60,8 +59,12 @@ def get_tokenizer(name):
         return GemmaTokenizerFast.from_pretrained("Xenova/gemma-tokenizer")
     elif name == 'qwen':
         return Qwen2TokenizerFast.from_pretrained("Qwen/Qwen-tokenizer")
-    else:
-        raise ValueError(f"Unsupported tokenizer: {name}")
+    
+    raise ValueError(f"Unsupported tokenizer: {name}")
+
+def get_available_tokenizers():
+    return ['gpt-4o', 'gpt-4', 'claude', 'llama', 'llama3', 'gemma', 'qwen']
+
 
 def is_binary(file_path):
     try:
@@ -70,41 +73,39 @@ def is_binary(file_path):
     except IOError:
         return True
 
+def process_file(file_path, tokenizer, base_path=None):
+    relative_path = os.path.relpath(file_path, base_path) if base_path else os.path.basename(file_path)
+    
+    if is_binary(file_path):
+        return 0, [(relative_path, 'Binary')]
+    
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+            tokens = len(tokenizer.encode(content))
+            return tokens, [(relative_path, tokens)]
+    except Exception:
+        return 0, [(relative_path, 'Error')]
+
 def count_tokens(path, tokenizer_name):
     tokenizer = get_tokenizer(tokenizer_name)
     total_tokens = 0
     file_results = []
 
     if os.path.isfile(path):
-        if is_binary(path):
-            file_results.append((os.path.basename(path), 'Binary'))
-        else:
-            try:
-                with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                    content = f.read()
-                    tokens = len(tokenizer.encode(content))
-                    total_tokens = tokens
-                    file_results.append((os.path.basename(path), tokens))
-            except Exception:
-                file_results.append((os.path.basename(path), 'Error'))
+        tokens, results = process_file(path, tokenizer)
+        total_tokens += tokens
+        file_results.extend(results)
     elif os.path.isdir(path):
         for root, _, files in os.walk(path):
             for file in files:
                 file_path = os.path.join(root, file)
-                relative_path = os.path.relpath(file_path, path)
-                if is_binary(file_path):
-                    file_results.append((relative_path, 'Binary'))
-                else:
-                    try:
-                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                            content = f.read()
-                            tokens = len(tokenizer.encode(content))
-                            total_tokens += tokens
-                            file_results.append((relative_path, tokens))
-                    except Exception:
-                        file_results.append((relative_path, 'Error'))
+                tokens, results = process_file(file_path, tokenizer, path)
+                total_tokens += tokens
+                file_results.extend(results)
 
     return total_tokens, file_results
+    
 
 class TokenizerApp:
     def __init__(self, master, path):
@@ -112,7 +113,7 @@ class TokenizerApp:
         self.path = path
         self.config = load_config()
 
-        master.title("Token Counter v0.1")
+        master.title("Token Counter v0.2")
         x = (self.master.winfo_screenwidth() // 2) - (500 // 2)
         y = (self.master.winfo_screenheight() // 2) - (300 // 2)
         self.master.geometry('500x300+{}+{}'.format(x, y))
@@ -130,7 +131,7 @@ class TokenizerApp:
         self.copy_button.pack(side=tk.LEFT, padx=(0, 10))
 
         self.tokenizer_var = tk.StringVar(value=self.config['default_tokenizer'])
-        self.tokenizer_dropdown = ttk.Combobox(control_frame, textvariable=self.tokenizer_var, values=self.get_available_tokenizers())
+        self.tokenizer_dropdown = ttk.Combobox(control_frame, textvariable=self.tokenizer_var, values=get_available_tokenizers())
         self.tokenizer_dropdown.pack(side=tk.LEFT, expand=True, fill=tk.X)
         self.tokenizer_dropdown.bind("<<ComboboxSelected>>", self.update_token_count)
 
@@ -152,9 +153,6 @@ class TokenizerApp:
         self.master.update_idletasks()
 
         self.update_token_count()
-
-    def get_available_tokenizers(self):
-        return ['gpt-4o', 'gpt-4', 'claude', 'llama', 'llama3', 'gemma', 'qwen']
 
     def update_token_count(self, event=None):
         tokenizer_name = self.tokenizer_var.get()
