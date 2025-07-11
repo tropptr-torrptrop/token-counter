@@ -1,5 +1,5 @@
 '''
-    Token Counter v0.2
+    Token Counter v0.3
     Copyright (C) 2024  NickNau
     
     https://github.com/tropptr-torrptrop/token-counter
@@ -49,8 +49,8 @@ def save_config(config):
 def get_tokenizer(name):
     if name.startswith('gpt'):
         return tiktoken.encoding_for_model(name)
-    elif name == 'claude':
-        return anthropic.Anthropic().get_tokenizer()
+    # elif name == 'claude':
+    #     return anthropic.Anthropic().get_tokenizer()
     elif name == 'llama':
         return LlamaTokenizerFast.from_pretrained("hf-internal-testing/llama-tokenizer")
     elif name == 'llama3':
@@ -112,8 +112,10 @@ class TokenizerApp:
         self.master = master
         self.path = path
         self.config = load_config()
+        self.excluded_paths = set()  # In-memory exclusion list
+        self.token_cache = {}  # Cache for token counts
 
-        master.title("Token Counter v0.2")
+        master.title("Token Counter v0.3")
         x = (self.master.winfo_screenwidth() // 2) - (500 // 2)
         y = (self.master.winfo_screenheight() // 2) - (300 // 2)
         self.master.geometry('500x300+{}+{}'.format(x, y))
@@ -133,7 +135,11 @@ class TokenizerApp:
         self.tokenizer_var = tk.StringVar(value=self.config['default_tokenizer'])
         self.tokenizer_dropdown = ttk.Combobox(control_frame, textvariable=self.tokenizer_var, values=get_available_tokenizers())
         self.tokenizer_dropdown.pack(side=tk.LEFT, expand=True, fill=tk.X)
-        self.tokenizer_dropdown.bind("<<ComboboxSelected>>", self.update_token_count)
+        self.tokenizer_dropdown.bind("<<ComboboxSelected>>", self.reset_token_counts)
+
+        # Add Calculate Tokens button
+        self.calc_button = ttk.Button(control_frame, text="Calculate Tokens", command=self.calculate_tokens)
+        self.calc_button.pack(side=tk.LEFT, padx=(10, 0))
 
         list_frame = ttk.Frame(master)
         list_frame.pack(pady=10, padx=20, fill=tk.BOTH, expand=True)
@@ -141,36 +147,216 @@ class TokenizerApp:
         scrollbar = ttk.Scrollbar(list_frame)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        self.file_list = ttk.Treeview(list_frame, yscrollcommand=scrollbar.set, columns=('File', 'Tokens'), show='headings')
-        self.file_list.heading('File', text='File')
-        self.file_list.heading('Tokens', text='Tokens')
-        self.file_list.column('File', width=330)
-        self.file_list.column('Tokens', width=50)
-        self.file_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.file_tree = ttk.Treeview(list_frame, yscrollcommand=scrollbar.set, columns=('Tokens',), show='tree headings')
+        self.file_tree.heading('#0', text='File/Folder')
+        self.file_tree.heading('Tokens', text='Tokens')
+        self.file_tree.column('#0', width=330)
+        self.file_tree.column('Tokens', width=50)
+        self.file_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        scrollbar.config(command=self.file_list.yview)
+        scrollbar.config(command=self.file_tree.yview)
+        
+        # Add right-click context menu for remove
+        self.menu = tk.Menu(self.master, tearoff=0)
+        self.menu.add_command(label="Remove", command=self.exclude_selected_item)
+        self.file_tree.bind("<Button-3>", self.show_context_menu)  # Windows/Linux
+        self.file_tree.bind("<Button-2>", self.show_context_menu)  # macOS
+        self.file_tree.bind("<<TreeviewOpen>>", self.on_open)
+        # Remove double-click token counting logic
+        # self.file_tree.bind("<Double-1>", self.on_expand)
+        # self.file_tree.bind("<ButtonRelease-1>", self.on_select)
         
         self.master.update_idletasks()
 
-        self.update_token_count()
+        self.populate_tree_lazy('', self.path, is_root=True)
+        self.reset_token_counts()
+
+    def populate_tree_lazy(self, parent, path, is_root=False):
+        # Only add the immediate children for lazy loading, and add a dummy child for expandable folders
+        if os.path.isdir(path):
+            if is_root:
+                node_id = self.file_tree.insert(parent, 'end', text=os.path.basename(path), values=(""), open=False, tags=(path,))
+            else:
+                node_id = parent
+            try:
+                entries = [e for e in sorted(os.listdir(path)) if os.path.join(path, e) not in self.excluded_paths]
+                for entry in entries:
+                    full_path = os.path.join(path, entry)
+                    if os.path.isdir(full_path):
+                        child_id = self.file_tree.insert(node_id, 'end', text=entry, values=(""), tags=(full_path,))
+                        # Add dummy child if this folder has children
+                        try:
+                            if any(os.path.join(full_path, c) not in self.excluded_paths for c in os.listdir(full_path)):
+                                self.file_tree.insert(child_id, 'end')
+                        except Exception:
+                            pass
+                    else:
+                        self.file_tree.insert(node_id, 'end', text=entry, values=(""), tags=(full_path,))
+            except Exception:
+                pass
+        else:
+            if path not in self.excluded_paths:
+                self.file_tree.insert(parent, 'end', text=os.path.basename(path), values=(""), tags=(path,))
+
+    def on_open(self, event):
+        # When a folder is expanded, populate its children if not already populated
+        item = self.file_tree.focus()
+        if not item:
+            return
+        path = self.file_tree.item(item, 'tags')[0]
+        # If the first child is a dummy, delete it and populate real children
+        children = self.file_tree.get_children(item)
+        if children:
+            first_child = children[0]
+            if not self.file_tree.item(first_child, 'tags'):
+                self.file_tree.delete(first_child)
+                self.populate_tree_lazy(item, path, is_root=False)
+        # After populating, update token columns from cache
+        self.update_tree_tokens(item)
+
+    def on_expand(self, event):
+        # When a folder is double-clicked, expand and populate its children if not already populated
+        item = self.file_tree.focus()
+        if not item:
+            return
+        path = self.file_tree.item(item, 'tags')[0]
+        if os.path.isdir(path):
+            # If already populated, skip
+            if self.file_tree.get_children(item):
+                return
+            self.populate_tree_lazy(item, path)
+        # On expand or select, update token count for this node
+        self.update_token_for_node(item)
+
+    def on_select(self, event):
+        # On select, update token count for the selected node
+        item = self.file_tree.focus()
+        if item:
+            self.update_token_for_node(item)
+
+    def update_token_for_node(self, item):
+        path = self.file_tree.item(item, 'tags')[0]
+        tokenizer = get_tokenizer(self.tokenizer_var.get())
+        if path in self.token_cache:
+            tokens = self.token_cache[path]
+        else:
+            tokens = self.count_tokens_path(path, tokenizer)
+            self.token_cache[path] = tokens
+        self.file_tree.set(item, 'Tokens', tokens)
+
+    def count_tokens_path(self, path, tokenizer):
+        # Count tokens for a file or folder, skipping excluded paths
+        if path in self.excluded_paths:
+            return 0
+        if os.path.isfile(path):
+            tokens, _ = process_file(path, tokenizer)
+            return tokens
+        elif os.path.isdir(path):
+            total = 0
+            try:
+                for entry in os.listdir(path):
+                    full_path = os.path.join(path, entry)
+                    if full_path in self.excluded_paths:
+                        continue
+                    total += self.count_tokens_path(full_path, tokenizer)
+            except Exception:
+                pass
+            return total
+        return 0
 
     def update_token_count(self, event=None):
         tokenizer_name = self.tokenizer_var.get()
-        token_count, file_results = count_tokens(self.path, tokenizer_name)
-        self.token_count_var.set(str(token_count))
-
-        for item in self.file_list.get_children():
-            self.file_list.delete(item)
-
-        for file_path, tokens in file_results:
-            self.file_list.insert('', 'end', values=(file_path, tokens))
-
+        tokenizer = get_tokenizer(tokenizer_name)
+        self.token_cache.clear()
+        total_tokens = self.count_tokens_path(self.path, tokenizer)
+        self.token_count_var.set(str(total_tokens))
+        # Optionally, update visible tokens in the tree
+        for item in self.file_tree.get_children():
+            self.update_token_for_node(item)
         self.config['default_tokenizer'] = tokenizer_name
         save_config(self.config)
+
+    def reset_token_counts(self, event=None):
+        self.token_count_var.set('')
+        self.token_cache.clear()
+        # Clear tree and repopulate
+        for item in self.file_tree.get_children():
+            self.file_tree.delete(item)
+        self.populate_tree_lazy('', self.path, is_root=True)
+        # Clear token counts in the tree
+        def clear_tokens(item):
+            self.file_tree.set(item, 'Tokens', '')
+            for child in self.file_tree.get_children(item):
+                clear_tokens(child)
+        for item in self.file_tree.get_children():
+            clear_tokens(item)
+        self.config['default_tokenizer'] = self.tokenizer_var.get()
+        save_config(self.config)
+
+    def calculate_tokens(self):
+        tokenizer_name = self.tokenizer_var.get()
+        tokenizer = get_tokenizer(tokenizer_name)
+        self.token_cache.clear()
+        # Recursively traverse the filesystem for all non-excluded files/folders
+        def count_tokens_path(path):
+            if path in self.excluded_paths:
+                return 0
+            if os.path.isfile(path):
+                tokens, _ = process_file(path, tokenizer)
+                self.token_cache[path] = tokens
+                return tokens
+            elif os.path.isdir(path):
+                subtotal = 0
+                try:
+                    for entry in os.listdir(path):
+                        full_path = os.path.join(path, entry)
+                        subtotal += count_tokens_path(full_path)
+                except Exception:
+                    pass
+                self.token_cache[path] = subtotal
+                return subtotal
+            return 0
+        total_tokens = count_tokens_path(self.path)
+        self.token_count_var.set(str(total_tokens))
+        # Update visible tree nodes' token columns
+        for item in self.file_tree.get_children():
+            self.update_tree_tokens(item)
+        self.config['default_tokenizer'] = tokenizer_name
+        save_config(self.config)
+
+    def show_context_menu(self, event):
+        item = self.file_tree.identify_row(event.y)
+        if item:
+            self.file_tree.selection_set(item)
+            self.menu.post(event.x_root, event.y_root)
+
+    def exclude_selected_item(self):
+        selected = self.file_tree.selection()
+        if not selected:
+            return
+        item = selected[0]
+        tags = self.file_tree.item(item, 'tags')
+        if not tags:
+            return
+        path = tags[0]
+        self.excluded_paths.add(path)
+        # Remove from tree
+        self.file_tree.delete(item)
+        # Do NOT update token count here; only update when Calculate Tokens is pressed
 
     def copy_to_clipboard(self):
         self.master.clipboard_clear()
         self.master.clipboard_append(self.token_count_var.get())
+
+    def update_tree_tokens(self, item):
+        tags = self.file_tree.item(item, 'tags')
+        if not tags:
+            return
+        path = tags[0]
+        tokens = self.token_cache.get(path, '')
+        self.file_tree.set(item, 'Tokens', tokens)
+        for child in self.file_tree.get_children(item):
+            self.update_tree_tokens(child)
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
