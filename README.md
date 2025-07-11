@@ -1,6 +1,3 @@
-
-https://github.com/tropptr-torrptrop/token-counter
-
 This application is a versatile token counting tool that supports multiple tokenizer models. It provides a graphical user interface for easy token counting of files or entire directories.
 
 ## Installation
@@ -10,7 +7,7 @@ This application is a versatile token counting tool that supports multiple token
 2. Install the required dependencies using pip:
 
    ```
-   pip install tiktoken transformers anthropic
+   pip install tiktoken transformers
    ```
 
    Note: You may need to install additional dependencies for specific tokenizers.
@@ -26,22 +23,23 @@ OR use `AddToExplorer.bat` (run as Admin) for Windows systems. It will add conte
 
 The application will open a graphical user interface with the following features:
 
-- A large text box displaying the total token count
+- A tree view showing files and folders (lazily loaded for speed)
+- Right-click any file or folder to exclude it from token counting (it is not deleted, just hidden from the tree and calculation)
 - A dropdown menu to select the tokenizer model
-- A "Copy to Clipboard" button to copy the token count
-- A list view showing individual file names and their token counts
+- A "Copy to Clipboard" button to copy the total token count
+- A "Calculate Tokens" button: tokens are only counted when you press this button, after you have excluded any files/folders you wish
+- Each file/folder in the tree will show its token count after calculation
 
 
 ## Logic Explanation
 
 1. The application starts by loading the configuration and initializing the GUI.
 
-2. When a file or directory is selected, the application processes it as follows:
-   - For a single file, it reads the content and tokenizes it.
-   - For multiple files - it will launch multiple instances of the program and tokenize each.
-   - For a directory, it recursively processes all files, skipping binary files.
+2. The file/folder tree is loaded lazily for speed. You can right-click to exclude any files or folders before calculation (they are not deleted from disk).
 
-3. The tokenization process depends on the selected model. You can see available options in dropdown.
+3. Token calculation only happens when you press the "Calculate Tokens" button. The app recursively processes all non-excluded files and folders, skipping binary files, and updates the tree with token counts.
+
+4. The tokenization process depends on the selected model. You can see available options in dropdown.
 
 To add new tokenizer - first check this link: https://huggingface.co/docs/transformers/v4.45.1/en/model_doc/auto#transformers.AutoTokenizer.from_pretrained
 
@@ -58,3 +56,7 @@ For tokenizers other than gpt and claude - Python will have to download models f
 
 
 Development assisted by Claude 3.5 Sonnet, Mistral Large 2 and Qwen 2.5
+
+## Special Thanks
+
+Thanks to the original author for the initial version: https://github.com/tropptr-torrptrop/token-counter
