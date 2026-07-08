@@ -16,6 +16,10 @@
 
     You should have received a copy of the GNU Affero General Public License
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+    example usage:
+    py -3.14 C:/Users/$USERNAME/source/token-counter/token_counter.pyw .
+    
 '''
 
 
@@ -28,6 +32,7 @@ from pathlib import Path
 import tiktoken
 import anthropic
 from transformers import AutoTokenizer, LlamaTokenizerFast, GemmaTokenizerFast, Qwen2TokenizerFast
+import fnmatch
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(SCRIPT_DIR, 'tokenizer_config.json')
@@ -92,17 +97,28 @@ def count_tokens(path, tokenizer_name):
     total_tokens = 0
     file_results = []
 
+    EXCLUDE_DIRS = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.tox', '.mypy_cache', 'storage', 'public', 'uploads', 'build', 'dist', '.next', '.nuxt', '.cache', '.idea', '.vscode'}
+    EXCLUDE_FILES = {'*.pyc', '*.pyo', '*.o', '*.so', '*.dll', '*.exe', '*.bin', '*.db', '*.sqlite', 'package-lock.json', 'yarn.lock', '*.lock', '*.log', '*.tmp', '*.cache', '*.jpg', '*.jpeg', '*.png', '*.gif', '*.bmp', '*.tiff', '*.ico', '*.svg', '*.mp3', '*.wav', '*.flac', '*.aac', '*.ogg', '*.mp4', '*.mkv', '*.avi', '*.mov', '*.wmv', '*.zip', '*.tar', '*.gz', '*.rar', '*.7z', '*.iso', '*.pdf', '*.doc', '*.docx', '*.xls', '*.xlsx', '*.ppt', '*.pptx', '*.epub', '*.mobi', '*.azw3', '*.bin', '*.dat'}
+
     if os.path.isfile(path):
         tokens, results = process_file(path, tokenizer)
         total_tokens += tokens
         file_results.extend(results)
     elif os.path.isdir(path):
         for root, _, files in os.walk(path):
+            # Skip excluded directories
+            if any(excl in root.split(os.sep) for excl in EXCLUDE_DIRS):
+                continue
             for file in files:
+                # Skip excluded file patterns
+                if any(fnmatch.fnmatch(file, pat) for pat in EXCLUDE_FILES):
+                    continue
                 file_path = os.path.join(root, file)
                 tokens, results = process_file(file_path, tokenizer, path)
                 total_tokens += tokens
                 file_results.extend(results)
+
+    file_results.sort(key=lambda x: x[1] if isinstance(x[1], int) else 0, reverse=True)
 
     return total_tokens, file_results
     
